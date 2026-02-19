@@ -134,12 +134,17 @@ class IncentivePipeline:
         poly_feature_names = self.poly.get_feature_names_out(self.raw_feature_columns)
         X_poly = pd.DataFrame(X_poly_arr, columns=poly_feature_names)
         
-        # Save expanded dataset
-        poly_data_path = os.path.join(self.data_dir, "processed_polynomial_features.csv")
-        X_poly_to_save = X_poly.copy()
-        X_poly_to_save["TARGET_order_accepted"] = y.values
-        X_poly_to_save.to_csv(poly_data_path, index=False)
-        print(f"  → Expanded dataset saved to {poly_data_path}")
+        # Save expanded dataset (Local inspection only - skip in production to save space)
+        if os.environ.get("VERCEL") is None:
+            poly_data_path = os.path.join(self.data_dir, "processed_polynomial_features.csv")
+            try:
+                X_poly_to_save = X_poly.copy()
+                X_poly_to_save["TARGET_order_accepted"] = y.values
+                X_poly_to_save.to_csv(poly_data_path, index=False)
+                print(f"  → Expanded dataset saved to {poly_data_path}")
+            except Exception as e:
+                print(f"  ! Warning: Skip saving expanded dataset ({e})")
+        
         print(f"  → Polynomial features: {X_poly.shape[1]}")
 
         # Step 5: LASSO Feature Selection
