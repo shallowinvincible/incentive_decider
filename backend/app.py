@@ -242,4 +242,4 @@ ensure_system_ready()
 
 if __name__ == "__main__":
     print("\n🚀 Starting Incentive Optimization API Server...\n")
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
