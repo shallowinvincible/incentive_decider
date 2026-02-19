@@ -1,6 +1,6 @@
 const API_BASE = window.location.hostname === 'localhost'
     ? 'http://localhost:5001/api'
-    : '/api';
+    : 'https://incentive-decider-3.onrender.com/api';
 
 export async function fetchDashboardStats() {
     const res = await fetch(`${API_BASE}/dashboard-stats`);
