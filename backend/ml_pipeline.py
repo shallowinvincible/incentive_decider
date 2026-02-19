@@ -1,7 +1,11 @@
 """
-ML Pipeline for Dynamic Incentive Optimization
-Uses XGBoost directly on encoded features for acceptance prediction.
-XGBoost handles non-linear interactions natively — no need for polynomial expansion.
+Refined ML Pipeline for Dynamic Incentive Optimization
+Follows the specific flow:
+1. Data Cleaning & Encoding
+2. Standard Scaling
+3. Polynomial Features (Interaction Only, Degree 2) -> Save Dataset
+4. LASSO Selection (LassoCV)
+5. Acceptance Classification Model (XGBClassifier)
 """
 
 import pandas as pd
@@ -13,7 +17,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
+from sklearn.linear_model import LassoCV
 from xgboost import XGBClassifier
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_score,
@@ -22,7 +27,7 @@ from sklearn.metrics import (
 
 
 class IncentivePipeline:
-    """End-to-end ML pipeline for rider acceptance prediction."""
+    """End-to-end ML pipeline with Polynomial Features and LASSO selection."""
 
     def __init__(self, data_dir=None, models_dir=None):
         base = os.path.dirname(__file__)
@@ -31,9 +36,14 @@ class IncentivePipeline:
         os.makedirs(self.models_dir, exist_ok=True)
 
         self.scaler = None
+        self.poly = None
+        self.lasso = None
         self.categorical_columns = ["weather", "city", "zone", "day_of_week", "traffic_level"]
         self.numeric_columns = []
-        self.feature_columns = []
+        self.raw_feature_columns = []  # Before poly
+        self.selected_feature_indices = [] # Indices of features selected by LASSO
+        self.selected_feature_names = []
+        
         self.model = None
         self.metrics = {}
         self.feature_importances = {}
@@ -75,59 +85,100 @@ class IncentivePipeline:
         self.numeric_columns = num_cols
         return df
 
-    def encode_and_prepare(self, df, fit=True):
-        """One-hot encode categoricals + scale numerics. Returns feature matrix X."""
+    def encode_and_prepare_raw(self, df, fit=True):
+        """One-hot encode categoricals. Returns raw encoded feature matrix."""
         cat_cols = [c for c in self.categorical_columns if c in df.columns]
-
         df_encoded = pd.get_dummies(df, columns=cat_cols, drop_first=True)
 
         # Define feature columns (exclude metadata and target)
         exclude = ["order_id", "order_accepted"]
         if fit:
-            self.feature_columns = [c for c in df_encoded.columns if c not in exclude]
-            self._encoded_col_template = self.feature_columns.copy()
+            self.raw_feature_columns = [c for c in df_encoded.columns if c not in exclude]
+            self._encoded_col_template = self.raw_feature_columns.copy()
         else:
             # Align columns with training
             for col in self._encoded_col_template:
                 if col not in df_encoded.columns:
                     df_encoded[col] = 0
-            self.feature_columns = self._encoded_col_template
+            self.raw_feature_columns = self._encoded_col_template
 
-        X = df_encoded[self.feature_columns].copy().astype(float)
+        return df_encoded[self.raw_feature_columns].copy().astype(float)
 
-        # Scale numeric features
-        scale_cols = [c for c in self.numeric_columns if c in X.columns]
-        if fit:
-            self.scaler = StandardScaler()
-            X[scale_cols] = self.scaler.fit_transform(X[scale_cols])
-        else:
-            X[scale_cols] = self.scaler.transform(X[scale_cols])
+    def run_full_pipeline(self):
+        """Execute the complete training pipeline."""
+        print("=" * 60)
+        print("  REFINED ML PIPELINE — Polynomial + LASSO + XGBoost")
+        print("=" * 60)
 
-        return X
+        # Step 1: Load & Clean
+        print("\n[1/7] Loading and cleaning data...")
+        df = self.load_data()
+        df = self.clean_data(df)
+        y = df["order_accepted"]
 
-    def train_model(self, X_train, y_train, X_test, y_test):
-        """Train XGBoost classifier for acceptance prediction."""
-        print("\n[4/5] Training XGBoost Acceptance Model...")
+        # Step 2: Encode
+        print("\n[2/7] Encoding categoricals...")
+        X_raw = self.encode_and_prepare_raw(df, fit=True)
+        
+        # Step 3: Scale
+        print("\n[3/7] Scaling numeric columns...")
+        num_cols_to_scale = [c for c in self.numeric_columns if c in X_raw.columns]
+        self.scaler = StandardScaler()
+        X_scaled = X_raw.copy()
+        X_scaled[num_cols_to_scale] = self.scaler.fit_transform(X_raw[num_cols_to_scale])
+
+        # Step 4: Polynomial Features
+        print("\n[4/7] Generating Polynomial Features (Degree 2, Interaction Only)...")
+        self.poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+        X_poly_arr = self.poly.fit_transform(X_scaled)
+        poly_feature_names = self.poly.get_feature_names_out(self.raw_feature_columns)
+        X_poly = pd.DataFrame(X_poly_arr, columns=poly_feature_names)
+        
+        # Save expanded dataset
+        poly_data_path = os.path.join(self.data_dir, "processed_polynomial_features.csv")
+        X_poly_to_save = X_poly.copy()
+        X_poly_to_save["TARGET_order_accepted"] = y.values
+        X_poly_to_save.to_csv(poly_data_path, index=False)
+        print(f"  → Expanded dataset saved to {poly_data_path}")
+        print(f"  → Polynomial features: {X_poly.shape[1]}")
+
+        # Step 5: LASSO Feature Selection
+        print("\n[5/7] Running LASSO Selection (LassoCV)...")
+        # Use LassoCV to find informative features
+        # We use a small max_iter to keep it fast, or increase if it doesn't converge
+        self.lasso = LassoCV(cv=5, random_state=42, max_iter=2000)
+        self.lasso.fit(X_poly, y)
+        
+        # Select features with non-zero coefficients
+        coef = pd.Series(self.lasso.coef_, index=X_poly.columns)
+        self.selected_feature_names = coef[coef != 0].index.tolist()
+        
+        # fallback if lasso drops everything (unlikely with CV, but good for stability)
+        if len(self.selected_feature_names) == 0:
+            print("  ! LASSO dropped all features, falling back to top 20 by magnitude")
+            self.selected_feature_names = coef.abs().sort_values(ascending=False).head(20).index.tolist()
+
+        print(f"  → Selected {len(self.selected_feature_names)} features out of {len(poly_feature_names)}")
+
+        # Step 6: Train Final Acceptance Model (XGBoost)
+        print("\n[6/7] Training Final Acceptance Model (XGBoost)...")
+        X_selected = X_poly[self.selected_feature_names]
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_selected, y, test_size=0.2, random_state=42, stratify=y
+        )
 
         self.model = XGBClassifier(
             n_estimators=300,
-            max_depth=6,
-            learning_rate=0.08,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            min_child_weight=10,
-            gamma=0.1,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
+            max_depth=5,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
             random_state=42,
             eval_metric="auc",
-            verbosity=0,
+            verbosity=0
         )
-        self.model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
-            verbose=False,
-        )
+        self.model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
 
         # Evaluate
         y_pred = self.model.predict(X_test)
@@ -141,58 +192,22 @@ class IncentivePipeline:
             "f1_score": round(f1_score(y_test, y_pred, zero_division=0), 4),
             "train_size": len(X_train),
             "test_size": len(X_test),
-            "n_features": X_train.shape[1],
+            "n_features_selected": len(self.selected_feature_names),
         }
 
         print(f"  → Accuracy:  {self.metrics['accuracy']}")
         print(f"  → ROC-AUC:   {self.metrics['roc_auc']}")
-        print(f"  → Precision:  {self.metrics['precision']}")
-        print(f"  → Recall:     {self.metrics['recall']}")
-        print(f"  → F1 Score:   {self.metrics['f1_score']}")
-
-        # Feature importances (top 20)
+        
+        # Feature importances
         importances = self.model.feature_importances_
-        feature_names = self.feature_columns
         sorted_idx = np.argsort(importances)[::-1][:20]
         self.feature_importances = {
-            feature_names[i]: round(float(importances[i]), 6)
+            self.selected_feature_names[i]: round(float(importances[i]), 6)
             for i in sorted_idx
         }
 
-        return self.model
-
-    def run_full_pipeline(self):
-        """Execute the complete training pipeline."""
-        print("=" * 60)
-        print("  ML PIPELINE — Training (XGBoost)")
-        print("=" * 60)
-
-        # Step 1
-        print("\n[1/5] Loading data...")
-        df = self.load_data()
-
-        # Step 2
-        print("\n[2/5] Cleaning data...")
-        df = self.clean_data(df)
-
-        # Step 3
-        print("\n[3/5] Encoding features & scaling...")
-        y = df["order_accepted"]
-        X = self.encode_and_prepare(df, fit=True)
-
-        print(f"  → Feature matrix: {X.shape[0]} rows × {X.shape[1]} columns")
-
-        # Split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-        print(f"  → Train: {len(X_train)}, Test: {len(X_test)}")
-
-        # Train
-        self.train_model(X_train, y_train, X_test, y_test)
-
-        # Save
-        print("\n[5/5] Saving model artifacts...")
+        # Step 7: Save Artifacts
+        print("\n[7/7] Saving model artifacts...")
         self.save_artifacts()
 
         print("\n" + "=" * 60)
@@ -204,10 +219,12 @@ class IncentivePipeline:
         """Save all model artifacts to disk."""
         artifacts = {
             "scaler": self.scaler,
+            "poly": self.poly,
+            "selected_feature_names": self.selected_feature_names,
             "model": self.model,
-            "feature_columns": self.feature_columns,
             "numeric_columns": self.numeric_columns,
             "categorical_columns": self.categorical_columns,
+            "raw_feature_columns": self.raw_feature_columns,
             "_encoded_col_template": self._encoded_col_template,
             "metrics": self.metrics,
             "feature_importances": self.feature_importances,
@@ -220,53 +237,57 @@ class IncentivePipeline:
         metrics_path = os.path.join(self.models_dir, "metrics.json")
         with open(metrics_path, "w") as f:
             json.dump(self.metrics, f, indent=2)
-        print(f"  → Metrics saved to {metrics_path}")
-
+            
         fi_path = os.path.join(self.models_dir, "feature_importances.json")
         with open(fi_path, "w") as f:
             json.dump(self.feature_importances, f, indent=2)
-        print(f"  → Feature importances saved to {fi_path}")
 
     def load_artifacts(self):
         """Load model artifacts from disk."""
         path = os.path.join(self.models_dir, "pipeline_artifacts.pkl")
+        if not os.path.exists(path):
+            return False
+        
         artifacts = joblib.load(path)
-
         self.scaler = artifacts["scaler"]
+        self.poly = artifacts["poly"]
+        self.selected_feature_names = artifacts["selected_feature_names"]
         self.model = artifacts["model"]
-        self.feature_columns = artifacts["feature_columns"]
         self.numeric_columns = artifacts["numeric_columns"]
         self.categorical_columns = artifacts["categorical_columns"]
+        self.raw_feature_columns = artifacts["raw_feature_columns"]
         self._encoded_col_template = artifacts["_encoded_col_template"]
         self.metrics = artifacts["metrics"]
-        self.feature_importances = artifacts["feature_importances"]
-
+        self.feature_importances = artifacts.get("feature_importances", {})
+        
         print(f"[✓] Artifacts loaded from {path}")
         return True
 
     def predict_acceptance_probability(self, order_features, incentive):
         """
         Predict acceptance probability for a single order at a given incentive.
-        order_features: dict of raw order features
-        incentive: float, incentive amount
         """
         row = pd.DataFrame([order_features])
         row["incentive_given"] = incentive
 
-        # Clean
-        for c in self.numeric_columns:
-            if c in row.columns:
-                row[c] = pd.to_numeric(row[c], errors="coerce").fillna(0)
-
-        for c in self.categorical_columns:
-            if c in row.columns:
-                row[c] = row[c].fillna("Unknown")
-
-        # Encode (fit=False → aligns to training columns)
-        X = self.encode_and_prepare(row, fit=False)
+        # Encode raw
+        X_raw = self.encode_and_prepare_raw(row, fit=False)
+        
+        # Scale
+        num_cols = [c for c in self.numeric_columns if c in X_raw.columns]
+        X_scaled = X_raw.copy()
+        X_scaled[num_cols] = self.scaler.transform(X_raw[num_cols])
+        
+        # Poly
+        X_poly_arr = self.poly.transform(X_scaled)
+        poly_names = self.poly.get_feature_names_out(self.raw_feature_columns)
+        X_poly = pd.DataFrame(X_poly_arr, columns=poly_names)
+        
+        # Select
+        X_selected = X_poly[self.selected_feature_names]
 
         # Predict
-        prob = self.model.predict_proba(X)[:, 1][0]
+        prob = self.model.predict_proba(X_selected)[:, 1][0]
         return float(prob)
 
 
