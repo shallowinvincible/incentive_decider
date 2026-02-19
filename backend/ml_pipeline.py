@@ -8,13 +8,18 @@ Follows the specific flow:
 5. Acceptance Classification Model (GradientBoostingClassifier)
 """
 
-import pandas as pd
 import numpy as np
 import os
 import json
 import joblib
 import warnings
 warnings.filterwarnings("ignore")
+
+# Only import pandas for training/cleaning
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
@@ -267,27 +272,81 @@ class IncentivePipeline:
     def predict_acceptance_probability(self, order_features, incentive):
         """
         Predict acceptance probability for a single order at a given incentive.
+        Uses pure NumPy/Scikit-Learn (no Pandas) for speed and deployment size.
         """
-        row = pd.DataFrame([order_features])
-        row["incentive_given"] = incentive
-
-        # Encode raw
-        X_raw = self.encode_and_prepare_raw(row, fit=False)
+        # 1. Prepare raw feature list in correct order
+        # We need to replicate what encode_and_prepare_raw did, but for one row
         
-        # Scale
-        num_cols = [c for c in self.numeric_columns if c in X_raw.columns]
+        feature_values = {}
+        for k, v in order_features.items():
+            feature_values[k] = v
+        feature_values["incentive_given"] = float(incentive)
+        
+        # Build the encoded vector
+        # X_raw is our target
+        x_raw_vec = []
+        
+        # The template contains both numeric columns and OHE dummy columns
+        for col in self._encoded_col_template:
+            # Check if it's a base numeric column
+            if col in feature_values:
+                x_raw_vec.append(float(feature_values[col]))
+            # Check if it's an OHE column (format: category_value)
+            elif "_" in col:
+                base_col = None
+                for cat in self.categorical_columns:
+                    if col.startswith(f"{cat}_"):
+                        base_col = cat
+                        break
+                
+                if base_col:
+                    val = str(feature_values.get(base_col, ""))
+                    expected_dummy_name = f"{base_col}_{val}"
+                    x_raw_vec.append(1.0 if expected_dummy_name == col else 0.0)
+                else:
+                    x_raw_vec.append(0.0)
+            else:
+                x_raw_vec.append(0.0)
+        
+        # Convert to 2D array for sklearn
+        X_raw = np.array([x_raw_vec])
+        
+        # 2. Scale
+        # Need to know WHICH indices in self._encoded_col_template are numeric
+        # We can find them by name
         X_scaled = X_raw.copy()
-        X_scaled[num_cols] = self.scaler.transform(X_raw[num_cols])
+        for i, col in enumerate(self._encoded_col_template):
+            if col in self.numeric_columns:
+                # Scaler expects only the numeric slice or full matrix?
+                # StandardScaler.transform expects the same number of features as fit()
+                # Wait, self.scaler was fit on numeric_cols only or full matrix?
+                # Check encode_and_prepare_raw in run_full_pipeline:
+                #   num_cols_to_scale = [c for c in self.numeric_columns if c in X_raw.columns]
+                #   self.scaler.fit_transform(X_raw[num_cols_to_scale])
+                # Okay, it was fit on just the numeric slice.
+                pass
         
-        # Poly
-        X_poly_arr = self.poly.transform(X_scaled)
-        poly_names = self.poly.get_feature_names_out(self.raw_feature_columns)
-        X_poly = pd.DataFrame(X_poly_arr, columns=poly_names)
-        
-        # Select
-        X_selected = X_poly[self.selected_feature_names]
+        # Let's fix the scaling logic to match training
+        num_indices = [i for i, c in enumerate(self._encoded_col_template) if c in self.numeric_columns]
+        if num_indices:
+            try:
+                X_scaled[:, num_indices] = self.scaler.transform(X_raw[:, num_indices])
+            except Exception as e:
+                # Fallback if indices mismatch
+                print(f"! Scaling error: {e}")
 
-        # Predict
+        # 3. Poly - transform accepts row vector
+        X_poly_arr = self.poly.transform(X_scaled)
+        
+        # 4. Select Features
+        # The mask for selected features (pipeline_artifacts.pkl saves the names)
+        # We need the indices of self.selected_feature_names within poly_feature_names
+        poly_names = self.poly.get_feature_names_out(self.raw_feature_columns).tolist()
+        selected_indices = [poly_names.index(name) for name in self.selected_feature_names]
+        
+        X_selected = X_poly_arr[:, selected_indices]
+
+        # 5. Predict
         prob = self.model.predict_proba(X_selected)[:, 1][0]
         return float(prob)
 

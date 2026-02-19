@@ -81,21 +81,20 @@ class IncentiveOptimizer:
             "incentive_curve": all_results  # For visualization
         }
 
-    def optimize_batch(self, orders_df):
+    def optimize_batch(self, orders_list):
         """
         Optimize incentives for a batch of orders.
 
         Args:
-            orders_df: DataFrame with order features
+            orders_list: List of dictionaries with order features
 
         Returns:
             list of result dicts
         """
         results = []
-        total = len(orders_df)
+        total = len(orders_list)
 
-        for idx, row in orders_df.iterrows():
-            order_features = row.to_dict()
+        for idx, order_features in enumerate(orders_list):
             result = self.optimize_single_order(order_features)
             # Don't include curve in batch (too much data)
             result.pop("incentive_curve", None)

@@ -6,10 +6,9 @@
         {
             "source": "/api/(.*)",
             "destination": "/api/index.py"
-        },
-        {
-            "source": "/(.*)",
-            "destination": "/$1"
         }
-    ]
+    ],
+    "env": {
+        "PYTHON_VERSION": "3.12"
+    }
 }

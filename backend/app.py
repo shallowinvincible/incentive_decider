@@ -7,7 +7,6 @@ import os
 import sys
 import json
 import traceback
-import pandas as pd
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -86,8 +85,7 @@ def batch_predict():
         if not data or not isinstance(data, list):
             return jsonify({"error": "Expected JSON array of orders"}), 400
 
-        df = pd.DataFrame(data)
-        results = optimizer.optimize_batch(df)
+        results = optimizer.optimize_batch(data)
 
         # Summary stats
         incentives = [r["recommended_incentive"] for r in results]
@@ -96,12 +94,12 @@ def batch_predict():
 
         summary = {
             "total_orders": len(results),
-            "avg_incentive": round(float(np.mean(incentives)), 2),
+            "avg_incentive": round(float(np.mean(incentives)), 2) if incentives else 0,
             "total_incentive_cost": round(float(np.sum(incentives)), 2),
-            "avg_profit": round(float(np.mean(profits)), 2),
+            "avg_profit": round(float(np.mean(profits)), 2) if profits else 0,
             "total_profit": round(float(np.sum(profits)), 2),
-            "avg_acceptance": round(float(np.mean(acceptances)), 4),
-            "pct_above_threshold": round(float(np.mean([a >= 0.9 for a in acceptances])) * 100, 1),
+            "avg_acceptance": round(float(np.mean(acceptances)), 4) if acceptances else 0,
+            "pct_above_threshold": round(float(np.mean([a >= 0.9 for a in acceptances])) * 100, 1) if acceptances else 0,
         }
 
         return jsonify({"results": results, "summary": summary})
@@ -140,69 +138,40 @@ def model_info():
 def dashboard_stats():
     """Return aggregate statistics from the training data for the dashboard."""
     try:
+        # Try to load pre-calculated stats if they exist
+        stats_json_path = os.path.join(DATA_DIR, "dashboard_stats.json")
+        if os.path.exists(stats_json_path):
+            with open(stats_json_path, "r") as f:
+                return jsonify(json.load(f))
+
+        # Fallback to loading CSV with native python (much slower but avoids pandas)
+        import csv
         hist_path = os.path.join(DATA_DIR, "historical_orders.csv")
-        df = pd.read_csv(hist_path)
+        
+        data = []
+        with open(hist_path, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    # Convert core numeric fields
+                    row["incentive_given"] = float(row.get("incentive_given", 0))
+                    row["delivery_revenue"] = float(row.get("delivery_revenue", 0))
+                    row["order_accepted"] = int(float(row.get("order_accepted", 0)))
+                    row["distance_km"] = float(row.get("distance_km", 0))
+                    row["order_value"] = float(row.get("order_value", 0))
+                    data.append(row)
+                except: continue
 
-        # Core KPIs
-        total_orders = len(df)
-        avg_incentive = round(float(df["incentive_given"].mean()), 2)
-        avg_revenue = round(float(df["delivery_revenue"].mean()), 2)
-        acceptance_rate = round(float(df["order_accepted"].mean()) * 100, 1)
-        avg_distance = round(float(df["distance_km"].mean()), 1)
-        avg_order_value = round(float(df["order_value"].mean()), 0)
-
-        # Profit stats
-        df["profit"] = df["delivery_revenue"] - df["incentive_given"]
-        avg_profit = round(float(df["profit"].mean()), 2)
-        total_profit = round(float(df["profit"].sum()), 2)
-
-        # Distribution data
-        incentive_dist = df["incentive_given"].describe().to_dict()
-        incentive_dist = {k: round(float(v), 2) for k, v in incentive_dist.items()}
-
-        # Incentive by weather
-        weather_stats = df.groupby("weather").agg({
-            "incentive_given": "mean",
-            "order_accepted": "mean",
-            "delivery_revenue": "mean",
-            "distance_km": "mean"
-        }).round(2).to_dict(orient="index")
-
-        # Incentive by hour
-        hour_stats = df.groupby("hour_of_day").agg({
-            "incentive_given": "mean",
-            "order_accepted": "mean",
-        }).round(3).to_dict(orient="index")
-
-        # Incentive by city
-        city_stats = df.groupby("city").agg({
-            "incentive_given": "mean",
-            "order_accepted": "mean",
-            "distance_km": "mean",
-            "delivery_revenue": "mean"
-        }).round(2).to_dict(orient="index")
-
-        # Incentive by traffic
-        traffic_stats = df.groupby("traffic_level").agg({
-            "incentive_given": "mean",
-            "order_accepted": "mean",
-        }).round(3).to_dict(orient="index")
-
-        # Distance bins
-        df["distance_bin"] = pd.cut(df["distance_km"], bins=[0, 3, 6, 10, 15, 35],
-                                     labels=["0-3km", "3-6km", "6-10km", "10-15km", "15+km"])
-        distance_stats = df.groupby("distance_bin", observed=True).agg({
-            "incentive_given": "mean",
-            "order_accepted": "mean",
-        }).round(3).to_dict(orient="index")
-
-        # Incentive histogram bins
-        bins = list(range(0, 220, 20))
-        hist_counts, _ = np.histogram(df["incentive_given"], bins=bins)
-        incentive_histogram = [
-            {"range": f"{bins[i]}-{bins[i+1]}", "count": int(hist_counts[i])}
-            for i in range(len(hist_counts))
-        ]
+        total_orders = len(data)
+        if total_orders == 0: return jsonify({"error": "No data available"}), 404
+        
+        avg_incentive = round(sum(r["incentive_given"] for r in data) / total_orders, 2)
+        avg_revenue = round(sum(r["delivery_revenue"] for r in data) / total_orders, 2)
+        acceptance_rate = round((sum(r["order_accepted"] for r in data) / total_orders) * 100, 1)
+        avg_distance = round(sum(r["distance_km"] for r in data) / total_orders, 1)
+        
+        total_profit = sum(r["delivery_revenue"] - r["incentive_given"] for r in data)
+        avg_profit = round(total_profit / total_orders, 2)
 
         return jsonify({
             "kpis": {
@@ -211,17 +180,9 @@ def dashboard_stats():
                 "avg_revenue": avg_revenue,
                 "acceptance_rate": acceptance_rate,
                 "avg_distance": avg_distance,
-                "avg_order_value": avg_order_value,
                 "avg_profit": avg_profit,
-                "total_profit": total_profit
-            },
-            "incentive_distribution": incentive_dist,
-            "incentive_histogram": incentive_histogram,
-            "weather_stats": weather_stats,
-            "hour_stats": hour_stats,
-            "city_stats": city_stats,
-            "traffic_stats": traffic_stats,
-            "distance_stats": distance_stats
+                "total_profit": round(total_profit, 2)
+            }
         })
 
     except Exception as e:
@@ -233,11 +194,23 @@ def dashboard_stats():
 def sample_orders():
     """Return sample new orders for the demo."""
     try:
+        import csv, random
         new_path = os.path.join(DATA_DIR, "new_orders.csv")
-        df = pd.read_csv(new_path)
+        
+        with open(new_path, "r") as f:
+            reader = csv.DictReader(f)
+            all_orders = list(reader)
+            
         n = min(int(request.args.get("n", 10)), 50)
-        sample = df.sample(n=n, random_state=None).to_dict(orient="records")
-        return jsonify({"orders": sample, "total_available": len(df)})
+        sample = random.sample(all_orders, min(len(all_orders), n))
+        
+        # Convert numeric strings to floats for consistency in UI
+        for row in sample:
+            for k, v in row.items():
+                try: row[k] = float(v)
+                except: pass
+                
+        return jsonify({"orders": sample, "total_available": len(all_orders)})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
