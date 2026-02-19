@@ -128,7 +128,7 @@ def model_info():
             "feature_importances": importances,
             "config": config,
             "model_type": "GradientBoostingClassifier",
-            "n_selected_features": len(pipeline.selected_features),
+            "n_selected_features": len(pipeline.selected_feature_names),
         })
 
     except Exception as e:

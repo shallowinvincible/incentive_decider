@@ -5,7 +5,7 @@ Follows the specific flow:
 2. Standard Scaling
 3. Polynomial Features (Interaction Only, Degree 2) -> Save Dataset
 4. LASSO Selection (LassoCV)
-5. Acceptance Classification Model (XGBClassifier)
+5. Acceptance Classification Model (GradientBoostingClassifier)
 """
 
 import pandas as pd
@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.linear_model import LassoCV
-from xgboost import XGBClassifier
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_score,
     recall_score, f1_score
@@ -160,25 +160,21 @@ class IncentivePipeline:
 
         print(f"  → Selected {len(self.selected_feature_names)} features out of {len(poly_feature_names)}")
 
-        # Step 6: Train Final Acceptance Model (XGBoost)
-        print("\n[6/7] Training Final Acceptance Model (XGBoost)...")
+        # Step 6: Train Final Acceptance Model (GradientBoostingClassifier)
+        print("\n[6/7] Training Final Acceptance Model (GradientBoostingClassifier)...")
         X_selected = X_poly[self.selected_feature_names]
         
         X_train, X_test, y_train, y_test = train_test_split(
             X_selected, y, test_size=0.2, random_state=42, stratify=y
         )
 
-        self.model = XGBClassifier(
-            n_estimators=300,
-            max_depth=5,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            eval_metric="auc",
-            verbosity=0
+        self.model = GradientBoostingClassifier(
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=4,
+            random_state=42
         )
-        self.model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+        self.model.fit(X_train, y_train)
 
         # Evaluate
         y_pred = self.model.predict(X_test)
