@@ -34,25 +34,24 @@ def ensure_system_ready():
     """Generate data + train model if not already done."""
     global pipeline, optimizer
 
-    # Check if data exists
-    hist_path = os.path.join(DATA_DIR, "historical_orders.csv")
-    if not os.path.exists(hist_path):
-        print("[!] No data found. Generating synthetic dataset...")
-        generate_data()
+    # Use paths relative to this file
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    local_data_dir = os.path.join(current_dir, "data")
+    local_models_dir = os.path.join(current_dir, "models")
 
     # Check if model exists
-    model_path = os.path.join(MODELS_DIR, "pipeline_artifacts.pkl")
-    if not os.path.exists(model_path):
-        print("[!] No model found. Training ML pipeline...")
-        pipeline = IncentivePipeline(data_dir=DATA_DIR, models_dir=MODELS_DIR)
-        pipeline.run_full_pipeline()
-    else:
-        pipeline = IncentivePipeline(data_dir=DATA_DIR, models_dir=MODELS_DIR)
+    model_path = os.path.join(local_models_dir, "pipeline_artifacts.pkl")
+    
+    pipeline = IncentivePipeline(data_dir=local_data_dir, models_dir=local_models_dir)
+    
+    if os.path.exists(model_path):
         pipeline.load_artifacts()
+    else:
+        # Avoid auto-training in production/serverless environment
+        print("[!] Warning: Model artifacts not found. Please train locally first.")
 
-    config_path = os.path.join(DATA_DIR, "platform_config.json")
+    config_path = os.path.join(local_data_dir, "platform_config.json")
     optimizer = IncentiveOptimizer(pipeline, config_path=config_path)
-    print("[✓] System ready!")
 
 
 # ─── ROUTES ──────────────────────────────────────────────────────────────────
@@ -265,7 +264,9 @@ def retrain():
 
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 
+# Initialize system on module load (required for serverless)
+ensure_system_ready()
+
 if __name__ == "__main__":
     print("\n🚀 Starting Incentive Optimization API Server...\n")
-    ensure_system_ready()
     app.run(host="0.0.0.0", port=5001, debug=True)
