@@ -1,0 +1,22 @@
+{
+  "incentive_given": 0.048301,
+  "weather_Storm": 0.037892,
+  "weather_Heavy Rain": 0.032116,
+  "city_Pune": 0.02693,
+  "traffic_level_Low": 0.025509,
+  "traffic_level_Very High": 0.023848,
+  "zone_East": 0.023723,
+  "zone_Central": 0.022967,
+  "day_of_week_Thursday": 0.022955,
+  "day_of_week_Wednesday": 0.022927,
+  "rain_intensity": 0.022398,
+  "zone_North": 0.021971,
+  "zone_Industrial": 0.021677,
+  "city_Chennai": 0.021622,
+  "day_of_week_Monday": 0.021549,
+  "city_Delhi": 0.021511,
+  "day_of_week_Sunday": 0.021361,
+  "hour_of_day": 0.021291,
+  "zone_Suburban": 0.020782,
+  "traffic_level_Medium": 0.020558
+}

@@ -1,0 +1,11 @@
+{
+  "commission_rate": 0.22,
+  "delay_penalty_per_minute": 2.5,
+  "max_incentive": 200,
+  "min_incentive": 0,
+  "incentive_step": 5,
+  "required_acceptance_threshold": 0.9,
+  "currency": "INR",
+  "platform_name": "SwiftDeliver",
+  "version": "1.0"
+}
